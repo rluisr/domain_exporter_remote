@@ -1,0 +1,30 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: "ja-JP"
+early_access: false
+reviews:
+  sequence_diagrams: false
+  request_changes_workflow: true
+  high_level_summary: true
+  poem: false
+  review_status: true
+  collapse_walkthrough: false
+  auto_review:
+    enabled: true
+    ignore_title_keywords:
+      - "WIP"
+      - "DO NOT MERGE"
+    drafts: false
+  tools:
+    shellcheck:
+      enabled: true
+    github-checks:
+      enabled: true
+      timeout_ms: 90000
+    golangci-lint:
+      enabled: true
+    languagetool:
+      enabled: true
+      enabled_only: false
+      level: default
+chat:
+  auto_reply: true
