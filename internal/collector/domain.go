@@ -72,13 +72,17 @@ func (c *domainCollector) Collect(ch chan<- prometheus.Metric) {
 		date, err := c.client.ExpireTime(ctx, domain.Name, domain.Host)
 		if err != nil {
 			log.Printf("failed to probe %s: %s", domain, err)
-			return
+		}
+
+		isSuccess := 0
+		if err == nil {
+			isSuccess = 1
 		}
 
 		ch <- prometheus.MustNewConstMetric(
 			c.probeSuccess,
 			prometheus.GaugeValue,
-			1,
+			float64(isSuccess),
 			domain.Name,
 		)
 		ch <- prometheus.MustNewConstMetric(

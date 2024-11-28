@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"log"
 	"os"
 	"strings"
 	"sync"
@@ -16,8 +17,6 @@ import (
 	"github.com/caarlos0/domain_exporter/internal/whois"
 	"github.com/castai/promwrite"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
 )
 
 var (
@@ -31,15 +30,13 @@ func main() {
 	kingpin.HelpFlag.Short('h')
 	kingpin.Parse()
 
-	zerolog.SetGlobalLevel(zerolog.InfoLevel)
-	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
-
 	cfg, err := safeconfig.New(*configFile)
 	if err != nil {
-		log.Fatal().Err(err).Msg("設定の作成中にエラーが発生しました")
+		log.Println("failed to create config", err)
+		os.Exit(1)
 	}
 	if len(cfg.Domains) == 0 {
-		log.Error().Msg("プローブするドメインがありません --config は少なくとも1つのドメインを含む必要があります")
+		log.Println("no domains to probe --config must contain at least one domain")
 		os.Exit(1)
 	}
 
@@ -53,14 +50,15 @@ func main() {
 
 	prometheusClient, err := promclient.NewClient(cfg)
 	if err != nil {
-		log.Fatal().Err(err).Msg("failed to create prometheus client")
+		log.Println("failed to create prometheus client", err)
+		os.Exit(1)
 	}
 
 	err = collectAndSendMetrics(prometheusClient)
 	if err != nil {
-		log.Error().Err(err).Msg("failed to collect metrics")
+		log.Println("failed to collect metrics", err)
 	} else {
-		log.Info().Msg("successfully output metrics to stdout")
+		log.Println("successfully output metrics to stdout")
 	}
 }
 

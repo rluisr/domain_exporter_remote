@@ -1,6 +1,6 @@
 module github.com/caarlos0/domain_exporter
 
-go 1.21
+go 1.23
 
 toolchain go1.23.3
 
@@ -8,7 +8,6 @@ require (
 	github.com/alecthomas/kingpin/v2 v2.4.0
 	github.com/castai/promwrite v0.5.0
 	github.com/domainr/whois v0.1.0
-	github.com/matryer/is v1.4.1
 	github.com/openrdap/rdap v0.9.1
 	github.com/prometheus/client_golang v1.20.5
 	github.com/rs/zerolog v1.33.0
