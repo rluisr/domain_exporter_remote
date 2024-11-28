@@ -2,37 +2,26 @@ package main
 
 import (
 	"context"
-	"fmt"
-	"net/http"
+	"log"
 	"os"
-	"os/signal"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/alecthomas/kingpin/v2"
 	"github.com/caarlos0/domain_exporter/internal/client"
 	"github.com/caarlos0/domain_exporter/internal/collector"
+	promclient "github.com/caarlos0/domain_exporter/internal/prometheus"
 	"github.com/caarlos0/domain_exporter/internal/rdap"
-	"github.com/caarlos0/domain_exporter/internal/refresher"
 	"github.com/caarlos0/domain_exporter/internal/safeconfig"
 	"github.com/caarlos0/domain_exporter/internal/whois"
-	cache "github.com/patrickmn/go-cache"
+	"github.com/castai/promwrite"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
 )
 
-// nolint: gochecknoglobals
 var (
-	bind       = kingpin.Flag("bind", "addr to bind the server").Short('b').Default(":9222").String()
-	debug      = kingpin.Flag("debug", "show debug logs").Default("false").Bool()
-	format     = kingpin.Flag("logFormat", "log format to use").Default("console").Enum("json", "console")
-	interval   = kingpin.Flag("cache", "time to cache the result of whois calls").Default("2h").Duration()
 	timeout    = kingpin.Flag("timeout", "timeout for each domain").Default("10s").Duration()
-	configFile = kingpin.Flag("config", "configuration file").String()
+	configFile = kingpin.Flag("config", "configuration file").Default("config.yml").String()
 	version    = "dev"
 )
 
@@ -41,117 +30,86 @@ func main() {
 	kingpin.HelpFlag.Short('h')
 	kingpin.Parse()
 
-	urlPrefix, urlPrefixOK := os.LookupEnv("DOMAIN_EXPORTER_URL_PREFIX")
-	if !urlPrefixOK {
-		urlPrefix = ""
-	}
-
-	zerolog.SetGlobalLevel(zerolog.InfoLevel)
-	if *format == "console" {
-		log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
-	}
-	if *debug {
-		zerolog.SetGlobalLevel(zerolog.DebugLevel)
-		log.Debug().Msg("enabled debug mode")
-	}
-
-	log.Info().Msgf("starting domain_exporter %s", version)
 	cfg, err := safeconfig.New(*configFile)
 	if err != nil {
-		log.Fatal().Err(err).Msg("error to create config")
+		log.Println("failed to create config", err)
+		os.Exit(1)
+	}
+	if len(cfg.Domains) == 0 {
+		log.Println("no domains to probe --config must contain at least one domain")
+		os.Exit(1)
 	}
 
 	wg := &sync.WaitGroup{}
 	defer wg.Wait()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	c := client.NewMultiClient(rdap.NewClient(), whois.NewClient())
 
-	cache := cache.New(*interval, *interval)
-	cli := client.NewMultiClient(rdap.NewClient(), whois.NewClient())
-	cachedClient := client.NewCachedClient(cli, cache)
+	domainCollector := collector.NewDomainCollector(c, *timeout*time.Duration(len(cfg.Domains)), cfg.Domains...)
+	prometheus.MustRegister(domainCollector)
 
-	if len(cfg.Domains) != 0 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			fresh := refresher.New(*interval, cachedClient, *timeout*time.Duration(len(cfg.Domains)), cfg.Domains...)
-			defer fresh.Stop()
-			fresh.Run(ctx)
-		}()
-
-		domainCollector := collector.NewDomainCollector(cachedClient, *timeout*time.Duration(len(cfg.Domains)), cfg.Domains...)
-		prometheus.DefaultRegisterer.MustRegister(domainCollector)
+	prometheusClient, err := promclient.NewClient(cfg)
+	if err != nil {
+		log.Println("failed to create prometheus client", err)
+		os.Exit(1)
 	}
 
-	http.Handle("/metrics", promhttp.Handler())
-	http.HandleFunc("/probe", probeHandler(cli))
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(
-			w, `
-			<html>
-			<head><title>Domain Exporter</title></head>
-			<body>
-				<h1>Domain Exporter</h1>
-				<p><a href="%[1]s/metrics">Metrics</a></p>
-				<p><a href="%[1]s/probe?target=google.com">probe google.com</a></p>
-			</body>
-			</html>
-			`, urlPrefix,
-		)
-	})
-
-	if err := runServerWithGracefullyShutdown(wg); err != nil {
-		log.Fatal().Err(err).Msg("error starting server")
+	err = collectAndSendMetrics(prometheusClient)
+	if err != nil {
+		log.Println("failed to collect metrics", err)
+	} else {
+		log.Println("successfully output metrics to stdout")
 	}
-
-	log.Info().Msg("domain exporter is finished")
 }
 
-func runServerWithGracefullyShutdown(wg *sync.WaitGroup) error {
-	signalChan := make(chan os.Signal, 1)
-	signal.Notify(signalChan, syscall.SIGTERM)
-	signal.Notify(signalChan, syscall.SIGINT)
+func collectAndSendMetrics(promClient *promwrite.Client) error {
+	gatherer := prometheus.DefaultGatherer
+	metricFamilies, err := gatherer.Gather()
+	if err != nil {
+		return err
+	}
 
-	server := &http.Server{Addr: *bind}
+	data := []promwrite.TimeSeries{}
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-
-		sig := <-signalChan
-
-		log.Warn().Msgf("got %s signal. Shutdown", sig)
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
-		defer cancel()
-
-		if err := server.Shutdown(ctx); err != nil {
-			log.Error().Err(err).Msg("failed to shutdown http server")
+	for _, mf := range metricFamilies {
+		if !strings.Contains(mf.GetName(), "domain_") {
+			continue
 		}
-	}()
 
-	log.Info().Msgf("listening on %s", *bind)
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if len(mf.GetMetric()) == 0 {
+			continue
+		}
+
+		for _, metric := range mf.GetMetric() {
+			labels := metric.GetLabel()
+			var domainLabelValue string
+			for _, label := range labels {
+				if label.GetName() == "domain" {
+					domainLabelValue = label.GetValue()
+					break
+				}
+			}
+			if domainLabelValue == "" {
+				continue
+			}
+
+			data = append(data, promwrite.TimeSeries{
+				Labels: []promwrite.Label{
+					{Name: "__name__", Value: mf.GetName()},
+					{Name: "domain", Value: domainLabelValue},
+				},
+				Sample: promwrite.Sample{
+					Time:  time.Now(),
+					Value: metric.GetGauge().GetValue(),
+				},
+			})
+		}
+	}
+
+	_, err = promClient.Write(context.TODO(), &promwrite.WriteRequest{TimeSeries: data})
+	if err != nil {
 		return err
 	}
 
 	return nil
-}
-
-func probeHandler(cli client.Client) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		params := r.URL.Query()
-		target := strings.TrimPrefix(params.Get("target"), "www.")
-		host := params.Get("host")
-		if target == "" {
-			log.Error().Msg("target parameter missing")
-			http.Error(w, "target parameter is missing", http.StatusBadRequest)
-			return
-		}
-
-		registry := prometheus.NewRegistry()
-		registry.MustRegister(collector.NewDomainCollector(cli, *timeout, safeconfig.Domain{Name: target, Host: host}))
-
-		promhttp.HandlerFor(registry, promhttp.HandlerOpts{}).ServeHTTP(w, r)
-	}
 }

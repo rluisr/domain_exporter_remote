@@ -2,6 +2,7 @@ package collector
 
 import (
 	"context"
+	"log"
 	"math"
 	"sync"
 	"time"
@@ -9,7 +10,6 @@ import (
 	"github.com/caarlos0/domain_exporter/internal/client"
 	"github.com/caarlos0/domain_exporter/internal/safeconfig"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/rs/zerolog/log"
 )
 
 type domainCollector struct {
@@ -63,22 +63,26 @@ func (c *domainCollector) Describe(ch chan<- *prometheus.Desc) {
 func (c *domainCollector) Collect(ch chan<- prometheus.Metric) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
-
 	ctx, cancel := context.WithTimeout(context.Background(), c.timeout)
 	defer cancel()
 
 	for _, domain := range c.domains {
 		start := time.Now()
+
 		date, err := c.client.ExpireTime(ctx, domain.Name, domain.Host)
 		if err != nil {
-			log.Error().Err(err).Msgf("failed to probe %s", domain)
+			log.Printf("failed to probe %s: %s", domain, err)
 		}
 
-		success := err == nil
+		isSuccess := 0
+		if err == nil {
+			isSuccess = 1
+		}
+
 		ch <- prometheus.MustNewConstMetric(
 			c.probeSuccess,
 			prometheus.GaugeValue,
-			boolToFloat(success),
+			float64(isSuccess),
 			domain.Name,
 		)
 		ch <- prometheus.MustNewConstMetric(
@@ -94,11 +98,4 @@ func (c *domainCollector) Collect(ch chan<- prometheus.Metric) {
 			domain.Name,
 		)
 	}
-}
-
-func boolToFloat(b bool) float64 {
-	if b {
-		return 1.0
-	}
-	return 0.0
 }
