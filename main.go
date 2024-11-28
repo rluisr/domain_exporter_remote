@@ -10,7 +10,7 @@ import (
 	"github.com/alecthomas/kingpin/v2"
 	"github.com/caarlos0/domain_exporter/internal/client"
 	"github.com/caarlos0/domain_exporter/internal/collector"
-	promClient "github.com/caarlos0/domain_exporter/internal/prometheus"
+	promclient "github.com/caarlos0/domain_exporter/internal/prometheus"
 	"github.com/caarlos0/domain_exporter/internal/rdap"
 	"github.com/caarlos0/domain_exporter/internal/safeconfig"
 	"github.com/caarlos0/domain_exporter/internal/whois"
@@ -46,18 +46,17 @@ func main() {
 	wg := &sync.WaitGroup{}
 	defer wg.Wait()
 
-	promClient, err := promClient.NewClient(cfg)
+	c := client.NewMultiClient(rdap.NewClient(), whois.NewClient())
+
+	domainCollector := collector.NewDomainCollector(c, *timeout*time.Duration(len(cfg.Domains)), cfg.Domains...)
+	prometheus.MustRegister(domainCollector)
+
+	prometheusClient, err := promclient.NewClient(cfg)
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to create prometheus client")
 	}
 
-	c := client.NewMultiClient(rdap.NewClient(), whois.NewClient())
-
-	// ドメインコレクターの初期化
-	domainCollector := collector.NewDomainCollector(c, *timeout*time.Duration(len(cfg.Domains)), cfg.Domains...)
-	prometheus.MustRegister(domainCollector)
-
-	err = collectAndSendMetrics(promClient)
+	err = collectAndSendMetrics(prometheusClient)
 	if err != nil {
 		log.Error().Err(err).Msg("failed to collect metrics")
 	} else {
@@ -65,7 +64,6 @@ func main() {
 	}
 }
 
-// collectAndSendMetrics は Prometheus のGathererを使用してメトリクスを収集し、標準出力に出力します。
 func collectAndSendMetrics(promClient *promwrite.Client) error {
 	gatherer := prometheus.DefaultGatherer
 	metricFamilies, err := gatherer.Gather()
@@ -80,16 +78,34 @@ func collectAndSendMetrics(promClient *promwrite.Client) error {
 			continue
 		}
 
-		data = append(data, promwrite.TimeSeries{
-			Labels: []promwrite.Label{
-				{Name: "__name__", Value: mf.GetName()},
-				{Name: "domain", Value: mf.GetMetric()[0].GetLabel()[0].GetValue()},
-			},
-			Sample: promwrite.Sample{
-				Time:  time.Now(),
-				Value: mf.GetMetric()[0].GetGauge().GetValue(),
-			},
-		})
+		if len(mf.GetMetric()) == 0 {
+			continue
+		}
+
+		for _, metric := range mf.GetMetric() {
+			labels := metric.GetLabel()
+			var domainLabelValue string
+			for _, label := range labels {
+				if label.GetName() == "domain" {
+					domainLabelValue = label.GetValue()
+					break
+				}
+			}
+			if domainLabelValue == "" {
+				continue
+			}
+
+			data = append(data, promwrite.TimeSeries{
+				Labels: []promwrite.Label{
+					{Name: "__name__", Value: mf.GetName()},
+					{Name: "domain", Value: domainLabelValue},
+				},
+				Sample: promwrite.Sample{
+					Time:  time.Now(),
+					Value: metric.GetGauge().GetValue(),
+				},
+			})
+		}
 	}
 
 	_, err = promClient.Write(context.TODO(), &promwrite.WriteRequest{TimeSeries: data})

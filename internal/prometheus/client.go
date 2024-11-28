@@ -1,4 +1,4 @@
-package promClient
+package promclient
 
 import (
 	"errors"

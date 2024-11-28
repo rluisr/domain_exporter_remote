@@ -10,9 +10,11 @@ Not supported without basic auth.
 
 ```yaml
 prometheus:
-  url: ""
-  user: ""
-  pass: ""
+  url: "http://prometheus:9090/api/v1/write" # Prometheus remote write endpoint URL
+  user: "username" # Basic auth username
+  pass: "password" # Basic auth password
+  # Note: URL must be a valid Prometheus remote write endpoint
+  # Basic auth credentials must be provided
 domains:
   - google.com
 ```
