@@ -32,7 +32,12 @@ func (a *Domain) UnmarshalYAML(unmarshal func(interface{}) error) error {
 }
 
 type SafeConfig struct {
-	Domains []Domain `yaml:"domains"`
+	Domains    []Domain `yaml:"domains"`
+	Prometheus struct {
+		URL  string `yaml:"url"`
+		User string `yaml:"user"`
+		Pass string `yaml:"pass"`
+	} `yaml:"prometheus"`
 }
 
 func New(pathToFile string) (SafeConfig, error) {
