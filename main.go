@@ -57,6 +57,7 @@ func main() {
 	err = collectAndSendMetrics(prometheusClient)
 	if err != nil {
 		log.Println("failed to collect metrics", err)
+		os.Exit(1)
 	} else {
 		log.Println("finished")
 	}
