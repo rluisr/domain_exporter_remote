@@ -58,7 +58,7 @@ func main() {
 	if err != nil {
 		log.Println("failed to collect metrics", err)
 	} else {
-		log.Println("successfully output metrics to stdout")
+		log.Println("finished")
 	}
 }
 
